@@ -1,0 +1,1112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gesture Controlled 3D Particles</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        
+        /* UI Overlay */
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            z-index: 10;
+            display: flex;
+            flex-direction: column;
+            gap: 15px;
+            pointer-events: none; /* Let clicks pass through where not interacting */
+        }
+
+        .panel {
+            background: rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            padding: 15px;
+            border-radius: 12px;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+            pointer-events: auto;
+            color: white;
+            width: 220px;
+            transition: transform 0.2s;
+        }
+
+        .panel:hover { transform: scale(1.02); }
+
+        h2 { margin: 0 0 10px 0; font-size: 14px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.8; }
+
+        /* Buttons */
+        .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        
+        button {
+            background: rgba(255, 255, 255, 0.1);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            color: white;
+            padding: 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.3s;
+            font-size: 12px;
+        }
+
+        button:hover { background: rgba(255, 255, 255, 0.3); }
+        button.active { background: #00d2ff; color: #000; border-color: #00d2ff; font-weight: bold; }
+
+        /* Color Picker */
+        input[type="color"] {
+            width: 100%;
+            height: 35px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            background: none;
+        }
+
+        /* Camera Preview */
+        #cam-preview {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            width: 160px;
+            height: 120px;
+            border-radius: 12px;
+            border: 2px solid rgba(255, 255, 255, 0.2);
+            transform: scaleX(-1); /* Mirror */
+            object-fit: cover;
+            z-index: 5;
+            opacity: 0.7;
+        }
+
+        #loading {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            color: #00d2ff;
+            font-size: 24px;
+            font-weight: bold;
+            text-align: center;
+        }
+        
+        .status { font-size: 10px; color: #aaa; margin-top: 5px; }
+    </style>
+    
+    <!-- Scripts -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="loading">Initializing Camera & AI...</div>
+
+    <div id="ui-container">
+        <div class="panel">
+            <h2>Shape Template</h2>
+            <div class="btn-grid">
+                <button onclick="setShape('heart')" class="active" id="btn-heart">Heart</button>
+                <button onclick="setShape('flower')" id="btn-flower">Flower</button>
+                <button onclick="setShape('saturn')" id="btn-saturn">Saturn</button>
+                <button onclick="setShape('statue')" id="btn-statue">Statue</button>
+                <button onclick="setShape('fireworks')" id="btn-fireworks">Fireworks</button>
+                <button onclick="setShape('sphere')" id="btn-sphere">Sphere</button>
+                <button onclick="setShape('milkyway')" id="btn-milkyway">Milky Way</button>
+            </div>
+        </div>
+        <div class="panel">
+            <h2>Particle Color</h2>
+            <input type="color" id="colorPicker" value="#00d2ff">
+        </div>
+        <div class="panel">
+            <h2>Status</h2>
+            <div class="status" id="status-text">Waiting for hands...</div>
+        </div>
+    </div>
+
+    <video id="cam-preview" playsinline></video>
+
+    <!-- Giant Wave Emoji -->
+    <div id="wave-emoji" style="
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 500px;
+        opacity: 0;
+        pointer-events: none;
+        z-index: 100;
+        text-shadow: 0 0 100px rgba(255, 200, 0, 0.8);
+        transition: opacity 0.1s;
+    ">👋</div>
+
+<script>
+    /** 
+     * CONFIGURATION & STATE 
+     */
+    const PARTICLE_COUNT = 15000;
+    const PARTICLE_SIZE = 0.08;
+    let currentShape = 'heart';
+    let targetPositions = new Float32Array(PARTICLE_COUNT * 3);
+    let explodedPositions = new Float32Array(PARTICLE_COUNT * 3);
+    let handDistance = 1; // 1 is default scale
+    let isHandDetected = false;
+    let isFistOpen = false; // true = open hand, false = closed fist
+    let fistOpenness = 0; // 0 = fully closed, 1 = fully open (smooth)
+    // 3D hand rotation (Euler angles)
+    let handRotationX = 0; // pitch (tilt forward/back)
+    let handRotationY = 0; // yaw (turn left/right)
+    let handRotationZ = 0; // roll (twist clockwise/counter)
+    let targetRotationX = 0;
+    let targetRotationY = 0;
+    let targetRotationZ = 0;
+
+    // Black hole easter egg
+    let isMiddleFingerUp = false;
+    let blackHoleActive = false;
+    let blackHoleIntensity = 0; // 0 = normal, 1 = fully collapsed
+
+    // Wave detection
+    const waveHistory = []; // Track hand x positions over time
+    const WAVE_HISTORY_SIZE = 30;
+    let isWaving = false;
+    let waveEmojiOpacity = 0;
+
+    // UI Elements
+    const statusText = document.getElementById('status-text');
+    const loadingEl = document.getElementById('loading');
+    const colorPicker = document.getElementById('colorPicker');
+    const waveEmoji = document.getElementById('wave-emoji');
+
+    /**
+     * THREE.JS SETUP
+     */
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x050505, 0.05);
+
+    const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+    camera.position.z = 8;
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    document.body.appendChild(renderer.domElement);
+
+    // Particle System
+    const geometry = new THREE.BufferGeometry();
+    const positions = new Float32Array(PARTICLE_COUNT * 3);
+    
+    // Initialize random positions
+    for(let i=0; i<PARTICLE_COUNT * 3; i++) {
+        positions[i] = (Math.random() - 0.5) * 10;
+        targetPositions[i] = positions[i];
+    }
+
+    geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+
+    // Shader Material for better looking particles
+    const textureLoader = new THREE.TextureLoader();
+    // Create a simple circular soft sprite programmatically
+    const getSprite = () => {
+        const canvas = document.createElement('canvas');
+        canvas.width = 32; canvas.height = 32;
+        const ctx = canvas.getContext('2d');
+        const grad = ctx.createRadialGradient(16,16,0,16,16,16);
+        grad.addColorStop(0, 'rgba(255,255,255,1)');
+        grad.addColorStop(1, 'rgba(255,255,255,0)');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0,0,32,32);
+        const texture = new THREE.Texture(canvas);
+        texture.needsUpdate = true;
+        return texture;
+    };
+
+    const material = new THREE.PointsMaterial({
+        color: 0x00d2ff,
+        size: PARTICLE_SIZE,
+        map: getSprite(),
+        transparent: true,
+        opacity: 0.8,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false
+    });
+
+    const particles = new THREE.Points(geometry, material);
+    scene.add(particles);
+
+    // Light for slight dimension (though PointsMaterial is unlit usually)
+    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    scene.add(ambientLight);
+
+    /**
+     * DIGITAL HAND TWINS (supports 2 hands)
+     */
+    const HAND_SCALE = 15; // Scale factor for hand visualization
+    const NUM_HANDS = 2;
+
+    // Colors for each hand
+    const handColors = [
+        { joint: 0x00ffff, tip: 0xff00ff, bone: 0x00ff88, palm: 0x00ff88 }, // Hand 1: cyan/magenta
+        { joint: 0xffff00, tip: 0xff8800, bone: 0xffaa00, palm: 0xffaa00 }  // Hand 2: yellow/orange
+    ];
+
+    // Bone connections (same for both hands)
+    const boneConnections = [
+        [0, 1], [1, 2], [2, 3], [3, 4],       // Thumb
+        [0, 5], [5, 6], [6, 7], [7, 8],       // Index
+        [0, 9], [9, 10], [10, 11], [11, 12],  // Middle
+        [0, 13], [13, 14], [14, 15], [15, 16], // Ring
+        [0, 17], [17, 18], [18, 19], [19, 20], // Pinky
+        [5, 9], [9, 13], [13, 17]              // Palm
+    ];
+
+    const fingertipIndices = [4, 8, 12, 16, 20];
+
+    // Create hand objects for both hands
+    const digitalHands = [];
+
+    for (let h = 0; h < NUM_HANDS; h++) {
+        const colors = handColors[h];
+
+        // Materials for this hand
+        const jointMat = new THREE.MeshBasicMaterial({
+            color: colors.joint,
+            transparent: true,
+            opacity: 0.9
+        });
+        const tipMat = new THREE.MeshBasicMaterial({
+            color: colors.tip,
+            transparent: true,
+            opacity: 0.9
+        });
+        const boneMat = new THREE.LineBasicMaterial({
+            color: colors.bone,
+            transparent: true,
+            opacity: 0.7
+        });
+        const palmMat = new THREE.MeshBasicMaterial({
+            color: colors.palm,
+            transparent: true,
+            opacity: 0.15,
+            side: THREE.DoubleSide
+        });
+
+        // Joint spheres (21 per hand)
+        const jointGeometry = new THREE.SphereGeometry(0.08, 16, 16);
+        const joints = [];
+        for (let i = 0; i < 21; i++) {
+            const mat = fingertipIndices.includes(i) ? tipMat : jointMat;
+            const joint = new THREE.Mesh(jointGeometry, mat);
+            joint.visible = false;
+            scene.add(joint);
+            joints.push(joint);
+        }
+
+        // Bones
+        const bones = [];
+        for (const conn of boneConnections) {
+            const geo = new THREE.BufferGeometry();
+            const positions = new Float32Array(6);
+            geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+            const line = new THREE.Line(geo, boneMat);
+            line.visible = false;
+            scene.add(line);
+            bones.push({ line, from: conn[0], to: conn[1] });
+        }
+
+        // Palm mesh
+        const palmGeo = new THREE.BufferGeometry();
+        const palmPositions = new Float32Array(4 * 3 * 3);
+        palmGeo.setAttribute('position', new THREE.BufferAttribute(palmPositions, 3));
+        const palm = new THREE.Mesh(palmGeo, palmMat);
+        palm.visible = false;
+        scene.add(palm);
+
+        digitalHands.push({
+            joints,
+            bones,
+            palm,
+            jointMaterial: jointMat,
+            tipMaterial: tipMat,
+            boneMaterial: boneMat,
+            palmMaterial: palmMat
+        });
+    }
+
+    // Convenience references for black hole effect (uses first hand's materials)
+    const jointMaterial = digitalHands[0].jointMaterial;
+    const fingertipMaterial = digitalHands[0].tipMaterial;
+    const boneMaterial = digitalHands[0].boneMaterial;
+    const palmMaterial = digitalHands[0].palmMaterial;
+
+    // Update digital hand from landmarks
+    function updateDigitalHand(landmarks, handIndex = 0) {
+        const hand = digitalHands[handIndex];
+        if (!hand) return;
+
+        if (!landmarks) {
+            // Hide this hand
+            hand.joints.forEach(j => j.visible = false);
+            hand.bones.forEach(b => b.line.visible = false);
+            hand.palm.visible = false;
+            return;
+        }
+
+        // Convert MediaPipe coords to 3D scene coords
+        const points = landmarks.map(lm => ({
+            x: (0.5 - lm.x) * HAND_SCALE,
+            y: (0.5 - lm.y) * HAND_SCALE,
+            z: -(lm.z || 0) * HAND_SCALE * 0.5
+        }));
+
+        // Update joints
+        for (let i = 0; i < 21; i++) {
+            hand.joints[i].position.set(points[i].x, points[i].y, points[i].z);
+            hand.joints[i].visible = true;
+        }
+
+        // Update bones
+        for (const bone of hand.bones) {
+            const from = points[bone.from];
+            const to = points[bone.to];
+            const positions = bone.line.geometry.attributes.position.array;
+            positions[0] = from.x; positions[1] = from.y; positions[2] = from.z;
+            positions[3] = to.x; positions[4] = to.y; positions[5] = to.z;
+            bone.line.geometry.attributes.position.needsUpdate = true;
+            bone.line.visible = true;
+        }
+
+        // Update palm mesh
+        const palmPoints = [0, 5, 9, 13, 17].map(i => points[i]);
+        const pPos = hand.palm.geometry.attributes.position.array;
+        // Triangle 1
+        pPos[0] = palmPoints[0].x; pPos[1] = palmPoints[0].y; pPos[2] = palmPoints[0].z;
+        pPos[3] = palmPoints[1].x; pPos[4] = palmPoints[1].y; pPos[5] = palmPoints[1].z;
+        pPos[6] = palmPoints[2].x; pPos[7] = palmPoints[2].y; pPos[8] = palmPoints[2].z;
+        // Triangle 2
+        pPos[9] = palmPoints[0].x; pPos[10] = palmPoints[0].y; pPos[11] = palmPoints[0].z;
+        pPos[12] = palmPoints[2].x; pPos[13] = palmPoints[2].y; pPos[14] = palmPoints[2].z;
+        pPos[15] = palmPoints[3].x; pPos[16] = palmPoints[3].y; pPos[17] = palmPoints[3].z;
+        // Triangle 3
+        pPos[18] = palmPoints[0].x; pPos[19] = palmPoints[0].y; pPos[20] = palmPoints[0].z;
+        pPos[21] = palmPoints[3].x; pPos[22] = palmPoints[3].y; pPos[23] = palmPoints[3].z;
+        pPos[24] = palmPoints[4].x; pPos[25] = palmPoints[4].y; pPos[26] = palmPoints[4].z;
+        // Triangle 4
+        pPos[27] = palmPoints[1].x; pPos[28] = palmPoints[1].y; pPos[29] = palmPoints[1].z;
+        pPos[30] = palmPoints[2].x; pPos[31] = palmPoints[2].y; pPos[32] = palmPoints[2].z;
+        pPos[33] = palmPoints[3].x; pPos[34] = palmPoints[3].y; pPos[35] = palmPoints[3].z;
+
+        hand.palm.geometry.attributes.position.needsUpdate = true;
+        hand.palm.visible = true;
+    }
+
+    // Hide all hands
+    function hideAllHands() {
+        for (let h = 0; h < NUM_HANDS; h++) {
+            updateDigitalHand(null, h);
+        }
+    }
+
+    /**
+     * SHAPE GENERATORS
+     */
+    function randomPointInSphere(radius) {
+        const u = Math.random();
+        const v = Math.random();
+        const theta = 2 * Math.PI * u;
+        const phi = Math.acos(2 * v - 1);
+        const r = Math.cbrt(Math.random()) * radius;
+        return {
+            x: r * Math.sin(phi) * Math.cos(theta),
+            y: r * Math.sin(phi) * Math.sin(theta),
+            z: r * Math.cos(phi)
+        };
+    }
+
+    function generateTargetShape(type) {
+        const newArr = new Float32Array(PARTICLE_COUNT * 3);
+        
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            let x, y, z;
+            const idx = i * 3;
+
+            if (type === 'heart') {
+                // Parametric Heart
+                const t = Math.random() * Math.PI * 2;
+                const r = Math.random(); // volume filler
+                // Heart shape formula
+                x = 16 * Math.pow(Math.sin(t), 3);
+                y = 13 * Math.cos(t) - 5 * Math.cos(2*t) - 2 * Math.cos(3*t) - Math.cos(4*t);
+                z = (Math.random() - 0.5) * 4; // Thickness
+                
+                // Scale down
+                x *= 0.15 * r; y *= 0.15 * r; z *= r;
+
+            } else if (type === 'flower') {
+                // Rose Curve (Polar)
+                const k = 4; // Petals
+                const theta = Math.random() * Math.PI * 2;
+                const rad = Math.cos(k * theta) + 0.5; // +0.5 thickness
+                const r = Math.random() * rad * 3;
+                
+                x = r * Math.cos(theta);
+                y = r * Math.sin(theta);
+                z = (Math.random() - 0.5) * (1 - r/4); // Taper z towards edge
+
+            } else if (type === 'saturn') {
+                const ratio = 0.7; // 70% planet, 30% rings
+                if (Math.random() < ratio) {
+                    // Planet
+                    const p = randomPointInSphere(1.5);
+                    x = p.x; y = p.y; z = p.z;
+                } else {
+                    // Rings
+                    const angle = Math.random() * Math.PI * 2;
+                    const dist = 2.2 + Math.random() * 1.5;
+                    x = Math.cos(angle) * dist;
+                    z = Math.sin(angle) * dist; // flat on XZ plane
+                    y = (Math.random() - 0.5) * 0.1;
+                    
+                    // Tilt the ring
+                    const tilt = 0.4;
+                    const ty = y * Math.cos(tilt) - z * Math.sin(tilt);
+                    const tz = y * Math.sin(tilt) + z * Math.cos(tilt);
+                    y = ty; z = tz;
+                }
+
+            } else if (type === 'statue') {
+                // Procedural "Meditating Figure" using primitives
+                const rand = Math.random();
+                
+                if (rand < 0.2) { 
+                    // Head (Sphere)
+                    const p = randomPointInSphere(0.6);
+                    x = p.x; y = p.y + 1.8; z = p.z;
+                } else if (rand < 0.6) {
+                    // Body (Cylinderish)
+                    const theta = Math.random() * Math.PI * 2;
+                    const h = Math.random() * 2; // Height 0 to 2
+                    const r = 0.8 * (1 - (h/3)); // Taper up
+                    x = r * Math.cos(theta);
+                    y = h - 0.5;
+                    z = r * Math.sin(theta);
+                } else {
+                    // Legs (Lotus base - flattened ellipsoid)
+                    const theta = Math.random() * Math.PI * 2;
+                    const r = Math.random() * 2;
+                    x = r * Math.cos(theta);
+                    y = (Math.random() - 0.5) * 0.5 - 0.5;
+                    z = r * Math.sin(theta);
+                }
+
+            } else if (type === 'sphere') {
+                 const p = randomPointInSphere(2.5);
+                 x = p.x; y = p.y; z = p.z;
+
+            } else if (type === 'fireworks') {
+                // Just explosion outward
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos((Math.random() * 2) - 1);
+                const r = 3 + Math.random() * 2;
+                x = r * Math.sin(phi) * Math.cos(theta);
+                y = r * Math.sin(phi) * Math.sin(theta);
+                z = r * Math.cos(phi);
+
+            } else if (type === 'milkyway') {
+                // Spiral galaxy with central bulge and arms
+                const rand = Math.random();
+
+                if (rand < 0.25) {
+                    // Central bulge (dense spherical core)
+                    const p = randomPointInSphere(0.8);
+                    x = p.x;
+                    y = p.y * 0.6; // Flatten slightly
+                    z = p.z;
+                } else {
+                    // Spiral arms
+                    const armCount = 2;
+                    const arm = Math.floor(Math.random() * armCount);
+                    const armOffset = (arm * Math.PI * 2) / armCount;
+
+                    // Distance from center (exponential distribution for density)
+                    const dist = 0.5 + Math.pow(Math.random(), 0.7) * 3.5;
+
+                    // Spiral angle increases with distance
+                    const spiralTightness = 0.5;
+                    const angle = armOffset + dist * spiralTightness + (Math.random() - 0.5) * 0.4;
+
+                    // Position in disk
+                    x = Math.cos(angle) * dist;
+                    z = Math.sin(angle) * dist;
+
+                    // Flatten into disk with some thickness variation
+                    const thickness = 0.15 * (1 - dist / 5); // Thinner at edges
+                    y = (Math.random() - 0.5) * thickness;
+
+                    // Add some scatter to make arms fuzzy
+                    x += (Math.random() - 0.5) * 0.3;
+                    z += (Math.random() - 0.5) * 0.3;
+                }
+            }
+
+            newArr[idx] = x;
+            newArr[idx+1] = y;
+            newArr[idx+2] = z;
+        }
+        return newArr;
+    }
+
+    // Generate exploded positions from base positions
+    function generateExplodedPositions(basePositions, explosionFactor = 3.0) {
+        const exploded = new Float32Array(PARTICLE_COUNT * 3);
+
+        for (let i = 0; i < PARTICLE_COUNT; i++) {
+            const idx = i * 3;
+            const x = basePositions[idx];
+            const y = basePositions[idx + 1];
+            const z = basePositions[idx + 2];
+
+            // Calculate distance from center
+            const dist = Math.sqrt(x * x + y * y + z * z);
+
+            // Normalize direction and push outward
+            if (dist > 0.01) {
+                const nx = x / dist;
+                const ny = y / dist;
+                const nz = z / dist;
+
+                // Push outward by explosion factor, with some randomness
+                const push = explosionFactor + Math.random() * 1.5;
+                exploded[idx] = x + nx * push;
+                exploded[idx + 1] = y + ny * push;
+                exploded[idx + 2] = z + nz * push;
+            } else {
+                // For center particles, push in random direction
+                const theta = Math.random() * Math.PI * 2;
+                const phi = Math.acos(Math.random() * 2 - 1);
+                const r = explosionFactor + Math.random() * 1.5;
+                exploded[idx] = r * Math.sin(phi) * Math.cos(theta);
+                exploded[idx + 1] = r * Math.sin(phi) * Math.sin(theta);
+                exploded[idx + 2] = r * Math.cos(phi);
+            }
+        }
+        return exploded;
+    }
+
+    // Initialize Target
+    targetPositions = generateTargetShape('heart');
+    explodedPositions = generateExplodedPositions(targetPositions);
+
+    // UI Interaction
+    window.setShape = (shape) => {
+        currentShape = shape;
+        targetPositions = generateTargetShape(shape);
+        explodedPositions = generateExplodedPositions(targetPositions);
+
+        // Update Buttons
+        document.querySelectorAll('button').forEach(b => b.classList.remove('active'));
+        document.getElementById('btn-' + shape).classList.add('active');
+    };
+
+    colorPicker.addEventListener('input', (e) => {
+        material.color.set(e.target.value);
+    });
+
+    /**
+     * MEDIAPIPE HAND TRACKING
+     */
+    const videoElement = document.getElementById('cam-preview');
+
+    // Helper: Calculate fist openness (0 = closed, 1 = open)
+    // Uses finger curl detection - compares fingertip to PIP distance along finger axis
+    // This method is more robust to hand rotation/tilt
+    function calculateFistOpenness(landmarks) {
+        const wrist = landmarks[0];
+
+        // Finger landmark indices: [MCP, PIP, DIP, TIP]
+        // Index: 5,6,7,8 | Middle: 9,10,11,12 | Ring: 13,14,15,16 | Pinky: 17,18,19,20
+        const fingers = [
+            { mcp: 5, pip: 6, dip: 7, tip: 8 },   // Index
+            { mcp: 9, pip: 10, dip: 11, tip: 12 }, // Middle
+            { mcp: 13, pip: 14, dip: 15, tip: 16 }, // Ring
+            { mcp: 17, pip: 18, dip: 19, tip: 20 }  // Pinky
+        ];
+
+        let openFingers = 0;
+
+        for (const finger of fingers) {
+            const mcp = landmarks[finger.mcp];
+            const pip = landmarks[finger.pip];
+            const tip = landmarks[finger.tip];
+
+            // Calculate distances from wrist (rotation-invariant reference)
+            const tipToWrist = Math.sqrt(
+                Math.pow(tip.x - wrist.x, 2) +
+                Math.pow(tip.y - wrist.y, 2) +
+                Math.pow((tip.z || 0) - (wrist.z || 0), 2)
+            );
+
+            const pipToWrist = Math.sqrt(
+                Math.pow(pip.x - wrist.x, 2) +
+                Math.pow(pip.y - wrist.y, 2) +
+                Math.pow((pip.z || 0) - (wrist.z || 0), 2)
+            );
+
+            const mcpToWrist = Math.sqrt(
+                Math.pow(mcp.x - wrist.x, 2) +
+                Math.pow(mcp.y - wrist.y, 2) +
+                Math.pow((mcp.z || 0) - (wrist.z || 0), 2)
+            );
+
+            // Finger is open if tip is further from wrist than PIP
+            // and tip is significantly further than MCP
+            const tipExtended = tipToWrist > pipToWrist * 1.1;
+            const fingerLength = tipToWrist / (mcpToWrist + 0.001);
+
+            if (tipExtended && fingerLength > 1.4) {
+                openFingers += 1;
+            } else if (tipExtended && fingerLength > 1.2) {
+                openFingers += 0.5; // Partially open
+            }
+        }
+
+        // Require at least 2-3 fingers clearly open to count as open fist
+        return Math.min(openFingers / 3, 1);
+    }
+
+    // Helper: Calculate full 3D hand orientation (X, Y, Z Euler angles)
+    // Constructs a coordinate frame from hand landmarks for precise tracking
+    function calculateHandRotation3D(landmarks) {
+        const wrist = landmarks[0];
+        const indexMCP = landmarks[5];
+        const middleMCP = landmarks[9];
+        const pinkyMCP = landmarks[17];
+
+        // Vector from wrist to middle finger (primary "up" direction)
+        const upX = middleMCP.x - wrist.x;
+        const upY = middleMCP.y - wrist.y;
+        const upZ = (middleMCP.z || 0) - (wrist.z || 0);
+
+        // Vector across palm (index to pinky) for "right" direction
+        const rightX = pinkyMCP.x - indexMCP.x;
+        const rightY = pinkyMCP.y - indexMCP.y;
+        const rightZ = (pinkyMCP.z || 0) - (indexMCP.z || 0);
+
+        // Normalize vectors
+        const upLen = Math.sqrt(upX * upX + upY * upY + upZ * upZ) || 1;
+        const nUpX = upX / upLen;
+        const nUpY = upY / upLen;
+        const nUpZ = upZ / upLen;
+
+        const rightLen = Math.sqrt(rightX * rightX + rightY * rightY + rightZ * rightZ) || 1;
+        const nRightX = rightX / rightLen;
+        const nRightY = rightY / rightLen;
+        const nRightZ = rightZ / rightLen;
+
+        // Cross product: forward = up × right (palm normal)
+        const forwardX = nUpY * nRightZ - nUpZ * nRightY;
+        const forwardY = nUpZ * nRightX - nUpX * nRightZ;
+        const forwardZ = nUpX * nRightY - nUpY * nRightX;
+
+        // Extract Euler angles from rotation matrix
+        // Roll (Z): rotation in the screen plane (hand twist)
+        const roll = Math.atan2(nUpX, -nUpY);
+
+        // Pitch (X): tilt forward/backward (palm facing up/down)
+        const pitch = Math.asin(Math.max(-1, Math.min(1, -forwardY))) * 0.8;
+
+        // Yaw (Y): turn left/right (based on palm normal direction)
+        const yaw = Math.atan2(forwardX, forwardZ) * 0.5;
+
+        return { pitch, yaw, roll };
+    }
+
+    // Smooth angle interpolation (handles wrap-around)
+    function lerpAngle(current, target, factor) {
+        let diff = target - current;
+        // Wrap to [-PI, PI]
+        while (diff > Math.PI) diff -= Math.PI * 2;
+        while (diff < -Math.PI) diff += Math.PI * 2;
+        return current + diff * factor;
+    }
+
+    // Detect wave gesture (hand moving side to side)
+    function detectWave(landmarks, allHandsLandmarks) {
+        // Get average x position of all detected hands
+        let avgX = 0;
+        for (const hand of allHandsLandmarks) {
+            avgX += hand[0].x; // Wrist position
+        }
+        avgX /= allHandsLandmarks.length;
+
+        // Add to history
+        waveHistory.push({ x: avgX, time: Date.now() });
+
+        // Keep history limited
+        while (waveHistory.length > WAVE_HISTORY_SIZE) {
+            waveHistory.shift();
+        }
+
+        // Need enough history to detect wave
+        if (waveHistory.length < 15) return false;
+
+        // Check for open hand (fingers extended for waving)
+        const hand = landmarks;
+        const wrist = hand[0];
+        let extendedFingers = 0;
+        const fingerTips = [8, 12, 16, 20];
+        const fingerPIPs = [6, 10, 14, 18];
+
+        for (let i = 0; i < fingerTips.length; i++) {
+            const tip = hand[fingerTips[i]];
+            const pip = hand[fingerPIPs[i]];
+            const tipDist = Math.sqrt(Math.pow(tip.x - wrist.x, 2) + Math.pow(tip.y - wrist.y, 2));
+            const pipDist = Math.sqrt(Math.pow(pip.x - wrist.x, 2) + Math.pow(pip.y - wrist.y, 2));
+            if (tipDist > pipDist * 1.1) extendedFingers++;
+        }
+
+        // Need at least 3 fingers extended for a wave
+        if (extendedFingers < 3) return false;
+
+        // Analyze x position changes to detect oscillation
+        let directionChanges = 0;
+        let lastDirection = 0;
+        let totalMovement = 0;
+
+        for (let i = 1; i < waveHistory.length; i++) {
+            const dx = waveHistory[i].x - waveHistory[i - 1].x;
+            totalMovement += Math.abs(dx);
+
+            const direction = dx > 0.005 ? 1 : dx < -0.005 ? -1 : 0;
+            if (direction !== 0 && direction !== lastDirection && lastDirection !== 0) {
+                directionChanges++;
+            }
+            if (direction !== 0) lastDirection = direction;
+        }
+
+        // Wave detected: enough direction changes and movement
+        return directionChanges >= 3 && totalMovement > 0.15;
+    }
+
+    // Detect middle finger gesture (the bird)
+    function detectMiddleFinger(landmarks) {
+        const wrist = landmarks[0];
+
+        // Helper: check if finger is extended
+        function isFingerExtended(tipIdx, pipIdx, mcpIdx) {
+            const tip = landmarks[tipIdx];
+            const pip = landmarks[pipIdx];
+            const mcp = landmarks[mcpIdx];
+
+            const tipToWrist = Math.sqrt(
+                Math.pow(tip.x - wrist.x, 2) +
+                Math.pow(tip.y - wrist.y, 2) +
+                Math.pow((tip.z || 0) - (wrist.z || 0), 2)
+            );
+            const pipToWrist = Math.sqrt(
+                Math.pow(pip.x - wrist.x, 2) +
+                Math.pow(pip.y - wrist.y, 2) +
+                Math.pow((pip.z || 0) - (wrist.z || 0), 2)
+            );
+            const mcpToWrist = Math.sqrt(
+                Math.pow(mcp.x - wrist.x, 2) +
+                Math.pow(mcp.y - wrist.y, 2) +
+                Math.pow((mcp.z || 0) - (wrist.z || 0), 2)
+            );
+
+            return tipToWrist > pipToWrist * 1.1 && tipToWrist > mcpToWrist * 1.3;
+        }
+
+        // Check each finger
+        const indexExtended = isFingerExtended(8, 6, 5);
+        const middleExtended = isFingerExtended(12, 10, 9);
+        const ringExtended = isFingerExtended(16, 14, 13);
+        const pinkyExtended = isFingerExtended(20, 18, 17);
+
+        // Middle finger up = middle extended, others curled
+        return middleExtended && !indexExtended && !ringExtended && !pinkyExtended;
+    }
+
+    function onResults(results) {
+        loadingEl.style.display = 'none';
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length >= 1) {
+            isHandDetected = true;
+
+            // Update digital hand twins for all detected hands
+            for (let h = 0; h < NUM_HANDS; h++) {
+                if (h < results.multiHandLandmarks.length) {
+                    updateDigitalHand(results.multiHandLandmarks[h], h);
+                } else {
+                    updateDigitalHand(null, h); // Hide undetected hands
+                }
+            }
+
+            // Use first hand for gesture control
+            const hand = results.multiHandLandmarks[0];
+
+            // Calculate fist openness (0 = closed, 1 = open)
+            const openness = calculateFistOpenness(hand);
+            isFistOpen = openness > 0.5;
+
+            // Smooth lerp for fist openness
+            const targetOpenness = openness;
+            fistOpenness += (targetOpenness - fistOpenness) * 0.15;
+
+            // Calculate full 3D hand rotation
+            const rot3D = calculateHandRotation3D(hand);
+            targetRotationX = rot3D.pitch;
+            targetRotationY = rot3D.yaw;
+            targetRotationZ = rot3D.roll;
+
+            // Smooth lerp for all rotations (with angle wrap handling)
+            const smoothFactor = 0.15;
+            handRotationX = lerpAngle(handRotationX, targetRotationX, smoothFactor);
+            handRotationY = lerpAngle(handRotationY, targetRotationY, smoothFactor);
+            handRotationZ = lerpAngle(handRotationZ, targetRotationZ, smoothFactor);
+
+            // Detect wave gesture
+            isWaving = detectWave(hand, results.multiHandLandmarks);
+
+            // Detect middle finger gesture
+            isMiddleFingerUp = detectMiddleFinger(hand);
+            if (isMiddleFingerUp) {
+                blackHoleActive = true;
+            } else if (blackHoleActive && blackHoleIntensity > 0.8) {
+                // Release from black hole when finger lowered (after full collapse)
+                blackHoleActive = false;
+            }
+
+            // Update status
+            const fistState = fistOpenness > 0.5 ? "OPEN" : "CLOSED";
+            const xDeg = Math.round(handRotationX * 180 / Math.PI);
+            const yDeg = Math.round(handRotationY * 180 / Math.PI);
+            const zDeg = Math.round(handRotationZ * 180 / Math.PI);
+
+            if (isMiddleFingerUp) {
+                statusText.innerText = "🕳️ BLACK HOLE ACTIVATED";
+                statusText.style.color = "#ff0000";
+            } else if (isWaving) {
+                statusText.innerText = "👋 WAVE DETECTED!";
+                statusText.style.color = "#ffcc00";
+            } else {
+                statusText.innerText = `${fistState} | X:${xDeg}° Y:${yDeg}° Z:${zDeg}°`;
+                statusText.style.color = "#00ff00";
+            }
+
+            // 2-hand distance for scale (optional)
+            if (results.multiHandLandmarks.length === 2) {
+                const hand1 = results.multiHandLandmarks[0][0];
+                const hand2 = results.multiHandLandmarks[1][0];
+                const dx = hand1.x - hand2.x;
+                const dy = hand1.y - hand2.y;
+                const dist = Math.sqrt(dx*dx + dy*dy);
+                const newScale = THREE.MathUtils.mapLinear(dist, 0.1, 0.8, 0.5, 3.5);
+                handDistance += (newScale - handDistance) * 0.1;
+            }
+
+        } else {
+            isHandDetected = false;
+            statusText.innerText = "No Hands Detected";
+            statusText.style.color = "#aaa";
+
+            // Hide all digital hands
+            hideAllHands();
+
+            // Reset gestures
+            isMiddleFingerUp = false;
+            blackHoleActive = false;
+            isWaving = false;
+            waveHistory.length = 0; // Clear wave history
+
+            // Return to IDLE state
+            handDistance += (1.0 - handDistance) * 0.05;
+            fistOpenness += (0 - fistOpenness) * 0.05;
+            // Smoothly return rotations to zero
+            handRotationX = lerpAngle(handRotationX, 0, 0.05);
+            handRotationY = lerpAngle(handRotationY, 0, 0.05);
+            handRotationZ = lerpAngle(handRotationZ, 0, 0.05);
+        }
+    }
+
+    const hands = new Hands({locateFile: (file) => {
+        return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+    }});
+
+    hands.setOptions({
+        maxNumHands: 2,
+        modelComplexity: 1,
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5
+    });
+
+    hands.onResults(onResults);
+
+    const cameraUtils = new Camera(videoElement, {
+        onFrame: async () => {
+            await hands.send({image: videoElement});
+        },
+        width: 320,
+        height: 240
+    });
+    
+    cameraUtils.start();
+
+    /**
+     * ANIMATION LOOP
+     */
+    const clock = new THREE.Clock();
+
+    function animate() {
+        requestAnimationFrame(animate);
+
+        const time = clock.getElapsedTime();
+        const positionsAttribute = geometry.attributes.position;
+        const array = positionsAttribute.array;
+
+        // Interaction Logic
+        // Base auto-rotation (slow spin when no hand)
+        if (!isHandDetected) {
+            particles.rotation.y += 0.002;
+        }
+
+        // Apply full 3D hand rotation (X, Y, Z axes)
+        particles.rotation.x = handRotationX;
+        particles.rotation.y += (handRotationY - particles.rotation.y) * 0.1;
+        particles.rotation.z = handRotationZ;
+
+        // Pulse Effect if heart
+        let pulse = 1;
+        if(currentShape === 'heart') {
+            pulse = 1 + Math.sin(time * 3) * 0.05;
+        }
+
+        // Wave emoji animation
+        if (isWaving) {
+            waveEmojiOpacity += (1 - waveEmojiOpacity) * 0.2;
+            // Add wiggle animation
+            const wiggle = Math.sin(time * 15) * 10;
+            waveEmoji.style.transform = `translate(-50%, -50%) rotate(${wiggle}deg)`;
+        } else {
+            waveEmojiOpacity *= 0.9;
+        }
+        waveEmoji.style.opacity = waveEmojiOpacity;
+
+        // Black hole effect - suck everything into the center
+        if (blackHoleActive) {
+            blackHoleIntensity += (1 - blackHoleIntensity) * 0.03;
+
+            // Spiral particles into center with rotation
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const idx = i * 3;
+                const x = array[idx];
+                const y = array[idx + 1];
+                const z = array[idx + 2];
+
+                // Distance from center
+                const dist = Math.sqrt(x * x + y * y + z * z);
+
+                if (dist > 0.01) {
+                    // Spiral inward with rotation
+                    const angle = 0.1 * blackHoleIntensity;
+                    const cosA = Math.cos(angle);
+                    const sinA = Math.sin(angle);
+
+                    // Rotate around Y axis while pulling in
+                    const newX = x * cosA - z * sinA;
+                    const newZ = x * sinA + z * cosA;
+
+                    // Pull toward center (stronger as intensity grows)
+                    const pull = 0.05 + blackHoleIntensity * 0.15;
+                    array[idx] = newX * (1 - pull);
+                    array[idx + 1] = y * (1 - pull);
+                    array[idx + 2] = newZ * (1 - pull);
+                }
+            }
+
+            // Shrink and darken
+            particles.scale.setScalar(Math.max(0.01, 1 - blackHoleIntensity * 0.95));
+            material.opacity = Math.max(0, 1 - blackHoleIntensity);
+            material.color.setHSL(0, 1, Math.max(0, 0.5 - blackHoleIntensity * 0.5));
+
+            // Also fade out all digital hands
+            for (const hand of digitalHands) {
+                hand.jointMaterial.opacity = Math.max(0, 0.9 - blackHoleIntensity);
+                hand.tipMaterial.opacity = Math.max(0, 0.9 - blackHoleIntensity);
+                hand.boneMaterial.opacity = Math.max(0, 0.7 - blackHoleIntensity);
+                hand.palmMaterial.opacity = Math.max(0, 0.15 - blackHoleIntensity * 0.15);
+            }
+
+            positionsAttribute.needsUpdate = true;
+
+        } else {
+            // Reset from black hole if gesture stopped
+            if (blackHoleIntensity > 0) {
+                blackHoleIntensity *= 0.95;
+                if (blackHoleIntensity < 0.01) {
+                    blackHoleIntensity = 0;
+                    // Restore opacity
+                    material.opacity = 0.8;
+                    for (const hand of digitalHands) {
+                        hand.jointMaterial.opacity = 0.9;
+                        hand.tipMaterial.opacity = 0.9;
+                        hand.boneMaterial.opacity = 0.7;
+                        hand.palmMaterial.opacity = 0.15;
+                    }
+                }
+            }
+
+            // Normal morphing with fist-controlled explosion
+            for (let i = 0; i < PARTICLE_COUNT; i++) {
+                const idx = i * 3;
+
+                // Get collapsed (fist closed) position
+                const closedX = targetPositions[idx];
+                const closedY = targetPositions[idx + 1];
+                const closedZ = targetPositions[idx + 2];
+
+                // Get exploded (fist open) position
+                const openX = explodedPositions[idx];
+                const openY = explodedPositions[idx + 1];
+                const openZ = explodedPositions[idx + 2];
+
+                // Interpolate based on fist openness
+                const tx = closedX + (openX - closedX) * fistOpenness;
+                const ty = closedY + (openY - closedY) * fistOpenness;
+                const tz = closedZ + (openZ - closedZ) * fistOpenness;
+
+                // Lerp current to target (smooth morphing)
+                array[idx]     += (tx - array[idx]) * 0.08;
+                array[idx + 1] += (ty - array[idx + 1]) * 0.08;
+                array[idx + 2] += (tz - array[idx + 2]) * 0.08;
+            }
+
+            positionsAttribute.needsUpdate = true;
+
+            // Apply Hand Control Scale
+            const finalScale = handDistance * pulse;
+            particles.scale.setScalar(finalScale);
+
+            // Interactive Color shift when exploded
+            if(isHandDetected && fistOpenness > 0.5) {
+                // Shift hue when exploded (fist open)
+                const hue = (time * 0.15) % 1;
+                material.color.setHSL(hue, 1, 0.6);
+            }
+        }
+
+        renderer.render(scene, camera);
+    }
+
+    // Handle Window Resize
+    window.addEventListener('resize', () => {
+        camera.aspect = window.innerWidth / window.innerHeight;
+        camera.updateProjectionMatrix();
+        renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    animate();
+
+</script>
+</body>
+</html>
