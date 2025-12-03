@@ -168,7 +168,10 @@
 
     // Wave detection
     const waveHistory = []; // Track hand x positions over time
-    const WAVE_HISTORY_SIZE = 30;
+    const WAVE_HISTORY_SIZE = 45; // ~1.5 seconds of history at 30fps
+    const WAVE_MIN_HISTORY = 25; // Need ~0.8 seconds before detection
+    const WAVE_MIN_DIRECTION_CHANGES = 5; // More back-and-forth required
+    const WAVE_MIN_MOVEMENT = 0.25; // More total movement required
     let isWaving = false;
     let waveEmojiOpacity = 0;
 
@@ -748,7 +751,7 @@
         }
 
         // Need enough history to detect wave
-        if (waveHistory.length < 15) return false;
+        if (waveHistory.length < WAVE_MIN_HISTORY) return false;
 
         // Check for open hand (fingers extended for waving)
         const hand = landmarks;
@@ -785,7 +788,7 @@
         }
 
         // Wave detected: enough direction changes and movement
-        return directionChanges >= 3 && totalMovement > 0.15;
+        return directionChanges >= WAVE_MIN_DIRECTION_CHANGES && totalMovement > WAVE_MIN_MOVEMENT;
     }
 
     // Detect middle finger gesture (the bird)
