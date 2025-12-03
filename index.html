@@ -168,10 +168,10 @@
 
     // Wave detection
     const waveHistory = []; // Track hand x positions over time
-    const WAVE_HISTORY_SIZE = 45; // ~1.5 seconds of history at 30fps
-    const WAVE_MIN_HISTORY = 25; // Need ~0.8 seconds before detection
-    const WAVE_MIN_DIRECTION_CHANGES = 5; // More back-and-forth required
-    const WAVE_MIN_MOVEMENT = 0.25; // More total movement required
+    const WAVE_HISTORY_SIZE = 60; // ~2 seconds of history at 30fps
+    const WAVE_MIN_HISTORY = 33; // Need ~1.1 seconds before detection
+    const WAVE_MIN_DIRECTION_CHANGES = 7; // More back-and-forth required
+    const WAVE_MIN_MOVEMENT = 0.33; // More total movement required
     let isWaving = false;
     let waveEmojiOpacity = 0;
 
