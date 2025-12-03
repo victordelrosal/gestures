@@ -140,6 +140,20 @@
         transition: opacity 0.1s;
     ">👋</div>
 
+    <!-- Giant See-No-Evil Emoji (for middle finger) -->
+    <div id="monkey-emoji" style="
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        font-size: 500px;
+        opacity: 0;
+        pointer-events: none;
+        z-index: 100;
+        text-shadow: 0 0 100px rgba(255, 0, 0, 0.8);
+        transition: opacity 0.1s;
+    ">🙈</div>
+
 <script>
     /** 
      * CONFIGURATION & STATE 
@@ -165,6 +179,7 @@
     let isMiddleFingerUp = false;
     let blackHoleActive = false;
     let blackHoleIntensity = 0; // 0 = normal, 1 = fully collapsed
+    let monkeyEmojiOpacity = 0;
 
     // Wave detection
     const waveHistory = []; // Track hand x positions over time
@@ -180,6 +195,7 @@
     const loadingEl = document.getElementById('loading');
     const colorPicker = document.getElementById('colorPicker');
     const waveEmoji = document.getElementById('wave-emoji');
+    const monkeyEmoji = document.getElementById('monkey-emoji');
 
     /**
      * THREE.JS SETUP
@@ -994,6 +1010,18 @@
             waveEmojiOpacity *= 0.9;
         }
         waveEmoji.style.opacity = waveEmojiOpacity;
+
+        // Monkey emoji animation (middle finger)
+        if (isMiddleFingerUp) {
+            monkeyEmojiOpacity += (1 - monkeyEmojiOpacity) * 0.3;
+            // Shake animation (embarrassed monkey!)
+            const shake = Math.sin(time * 20) * 15;
+            const scale = 1 + Math.sin(time * 8) * 0.05;
+            monkeyEmoji.style.transform = `translate(-50%, -50%) rotate(${shake}deg) scale(${scale})`;
+        } else {
+            monkeyEmojiOpacity *= 0.85;
+        }
+        monkeyEmoji.style.opacity = monkeyEmojiOpacity;
 
         // Black hole effect - suck everything into the center
         if (blackHoleActive) {
