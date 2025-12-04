@@ -126,20 +126,6 @@
 
     <video id="cam-preview" playsinline></video>
 
-    <!-- Giant Wave Emoji -->
-    <div id="wave-emoji" style="
-        position: fixed;
-        top: 50%;
-        left: 50%;
-        transform: translate(-50%, -50%);
-        font-size: 500px;
-        opacity: 0;
-        pointer-events: none;
-        z-index: 100;
-        text-shadow: 0 0 100px rgba(255, 200, 0, 0.8);
-        transition: opacity 0.1s;
-    ">👋</div>
-
     <!-- Giant See-No-Evil Emoji (for middle finger) -->
     <div id="monkey-emoji" style="
         position: fixed;
@@ -202,7 +188,6 @@
     const WAVE_MIN_DIRECTION_CHANGES = 7; // More back-and-forth required
     const WAVE_MIN_MOVEMENT = 0.33; // More total movement required
     let isWaving = false;
-    let waveEmojiOpacity = 0;
 
     // Pointing detection (index finger poking)
     const pointHistory = []; // Track index finger position over time
@@ -215,7 +200,6 @@
     const statusText = document.getElementById('status-text');
     const loadingEl = document.getElementById('loading');
     const colorPicker = document.getElementById('colorPicker');
-    const waveEmoji = document.getElementById('wave-emoji');
     const monkeyEmoji = document.getElementById('monkey-emoji');
     const fearEmoji = document.getElementById('fear-emoji');
 
@@ -1111,17 +1095,6 @@
         if(currentShape === 'heart') {
             pulse = 1 + Math.sin(time * 3) * 0.05;
         }
-
-        // Wave emoji animation
-        if (isWaving) {
-            waveEmojiOpacity += (1 - waveEmojiOpacity) * 0.2;
-            // Add wiggle animation
-            const wiggle = Math.sin(time * 15) * 10;
-            waveEmoji.style.transform = `translate(-50%, -50%) rotate(${wiggle}deg)`;
-        } else {
-            waveEmojiOpacity *= 0.9;
-        }
-        waveEmoji.style.opacity = waveEmojiOpacity;
 
         // Monkey emoji animation (middle finger)
         if (isMiddleFingerUp) {
